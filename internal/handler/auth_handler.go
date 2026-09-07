@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"bom-tanstack-api/internal/model"
@@ -31,7 +32,11 @@ func NewAuthHandler(svc authServicer) *AuthHandler {
 }
 
 func contextUserID(c *echo.Context) (primitive.ObjectID, error) {
-	return primitive.ObjectIDFromHex(c.Get("userID").(string))
+	raw, ok := c.Get("userID").(string)
+	if !ok {
+		return primitive.NilObjectID, errors.New("missing user context")
+	}
+	return primitive.ObjectIDFromHex(raw)
 }
 
 type loginRequest struct {
