@@ -8,6 +8,12 @@
 
 **Tech Stack:** Go 1.27, Echo v5, MongoDB via `go.mongodb.org/mongo-driver`, `golang-jwt/jwt/v5`, `golang.org/x/crypto/bcrypt`, `go-playground/validator/v10`, `stretchr/testify`, `testcontainers-go` (Mongo module) for repository integration tests.
 
+## Correction Log
+
+- **Echo v5 `Context` is a struct, not an interface** (unlike v4). Every place below that reads `echo.Context` as a type must be `*echo.Context`: `echo.HandlerFunc = func(c *Context) error`, handler methods (`func (h *AuthHandler) Login(c *echo.Context) error`), etc. Discovered during Task 16; applies to Tasks 16-21.
+- **`echo.HTTPErrorHandler`'s signature is `func(c *Context, err error)`** — context first, error second — not `func(err error, c echo.Context)` as written in Task 18 below. `middleware.ErrorHandler` must be `func ErrorHandler(c *echo.Context, err error)` with the body's error-handling logic unchanged, just the parameter order/type flipped.
+- Everything else checked against the real `go.mongodb.org/mongo-driver`, `golang-jwt/jwt/v5`, and `echo/v5` sources during task reviews matched this plan's assumptions exactly (see individual task review notes in `.superpowers/sdd/progress.md`).
+
 ## Global Constraints
 
 - Go module: `bom-tanstack-api`, Go 1.27.1 (from `go.mod`).
