@@ -36,6 +36,7 @@ func EnsureIndexes(ctx context.Context, database *mongo.Database) error {
 
 	if _, err := database.Collection("refresh_tokens").Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "user_id", Value: 1}}},
+		{Keys: bson.D{{Key: "token_hash", Value: 1}}},
 		{
 			Keys:    bson.D{{Key: "expires_at", Value: 1}},
 			Options: options.Index().SetExpireAfterSeconds(0),
@@ -44,9 +45,12 @@ func EnsureIndexes(ctx context.Context, database *mongo.Database) error {
 		return err
 	}
 
-	if _, err := database.Collection("password_reset_tokens").Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "expires_at", Value: 1}},
-		Options: options.Index().SetExpireAfterSeconds(0),
+	if _, err := database.Collection("password_reset_tokens").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "token_hash", Value: 1}}},
+		{
+			Keys:    bson.D{{Key: "expires_at", Value: 1}},
+			Options: options.Index().SetExpireAfterSeconds(0),
+		},
 	}); err != nil {
 		return err
 	}
