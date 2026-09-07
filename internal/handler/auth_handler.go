@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"bom-tanstack-api/internal/auth"
 	"bom-tanstack-api/internal/model"
 
 	"github.com/labstack/echo/v5"
@@ -165,6 +166,11 @@ func (h *AuthHandler) ChangePassword(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+type meResponse struct {
+	*model.User
+	Permissions []auth.Permission `json:"permissions"`
+}
+
 func (h *AuthHandler) Me(c *echo.Context) error {
 	userID, err := contextUserID(c)
 	if err != nil {
@@ -174,5 +180,8 @@ func (h *AuthHandler) Me(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, u)
+	return c.JSON(http.StatusOK, meResponse{
+		User:        u,
+		Permissions: auth.PermissionsForRole(auth.Role(u.Role)),
+	})
 }

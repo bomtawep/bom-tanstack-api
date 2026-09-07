@@ -116,6 +116,27 @@ func TestAuthHandler_Me_ReadsUserIDFromContext(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "alice@example.com")
+	assert.Contains(t, rec.Body.String(), "permissions")
+}
+
+func TestAuthHandler_Me_IncludesEffectivePermissionsForRole(t *testing.T) {
+	e := newTestEcho()
+	userID := primitive.NewObjectID()
+	svc := &fakeAuthServicer{meUser: &model.User{ID: userID, Email: "admin@example.com", Role: "admin"}}
+	h := NewAuthHandler(svc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set("userID", userID.Hex())
+
+	err := h.Me(c)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"user:create"`)
+	assert.Contains(t, rec.Body.String(), `"user:read"`)
+	assert.Contains(t, rec.Body.String(), `"user:update"`)
+	assert.Contains(t, rec.Body.String(), `"user:delete"`)
 }
 
 func TestAuthHandler_ForgotPassword_AlwaysReturns200(t *testing.T) {

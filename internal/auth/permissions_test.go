@@ -31,3 +31,17 @@ func TestHasPermission_StaffAndViewerHaveNoUserPermissions(t *testing.T) {
 func TestHasPermission_UnknownRoleHasNoPermissions(t *testing.T) {
 	assert.False(t, HasPermission(Role("nonexistent"), PermUserRead))
 }
+
+func TestPermissionsForRole_ReturnsExpectedPermissionsPerRole(t *testing.T) {
+	assert.ElementsMatch(t,
+		[]Permission{PermUserCreate, PermUserRead, PermUserUpdate, PermUserDelete},
+		PermissionsForRole(RoleAdmin),
+	)
+	assert.ElementsMatch(t, []Permission{PermUserRead}, PermissionsForRole(RoleManager))
+	assert.Empty(t, PermissionsForRole(RoleStaff))
+	assert.Empty(t, PermissionsForRole(RoleViewer))
+}
+
+func TestPermissionsForRole_UnknownRoleReturnsEmpty(t *testing.T) {
+	assert.Empty(t, PermissionsForRole(Role("nonexistent")))
+}

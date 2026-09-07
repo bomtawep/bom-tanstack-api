@@ -34,3 +34,9 @@ func HasPermission(role Role, perm Permission) bool {
 	}
 	return false
 }
+
+// PermissionsForRole returns the list of effective permissions granted to the
+// given role. Unknown roles return a nil/empty slice.
+func PermissionsForRole(role Role) []Permission {
+	return rolePermissions[role]
+}
