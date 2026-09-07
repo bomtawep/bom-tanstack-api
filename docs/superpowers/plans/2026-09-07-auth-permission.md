@@ -13,6 +13,7 @@
 - **Echo v5 `Context` is a struct, not an interface** (unlike v4). Every place below that reads `echo.Context` as a type must be `*echo.Context`: `echo.HandlerFunc = func(c *Context) error`, handler methods (`func (h *AuthHandler) Login(c *echo.Context) error`), etc. Discovered during Task 16; applies to Tasks 16-21.
 - **`echo.HTTPErrorHandler`'s signature is `func(c *Context, err error)`** — context first, error second — not `func(err error, c echo.Context)` as originally written in Task 18. Fixed directly in Task 18's code below, along with three more v5 differences found while fixing it: `echo.HTTPError.Message` is a plain `string` field (not `interface{}`, so no type assertion needed); `(*echo.Context).Response()` returns `http.ResponseWriter`, not a struct with a `.Committed` field — use `echo.UnwrapResponse(c.Response())` to get the underlying `*echo.Response` and read `.Committed` from that; `(*echo.Context).Logger()` returns `*slog.Logger`, whose `.Error` takes `(msg string, args ...any)`, not an `error` value directly.
 - **Test helpers `c.SetParamNames("id")` / `c.SetParamValues(...)` don't exist in Echo v5.** The v4-style two-call API was replaced by a single `c.SetPathValues(echo.PathValues{{Name: "id", Value: id}})`, where `PathValues` is `[]PathValue{ {Name, Value string} }`. Fixed directly in Task 20's test code below (`internal/handler/user_handler_test.go`), verified to compile and round-trip correctly (`c.Param("id")` returns the set value) against the real `echo/v5@v5.3.1` module.
+- **`*echo.Echo` has no `Shutdown` method in v5 — server lifecycle is fundamentally different from v4.** `e.Start(address)` internally installs its own `SIGINT`/`SIGTERM` handler (via `signal.NotifyContext`) and blocks until a full graceful shutdown completes, returning `nil` on a clean signal-triggered shutdown or a real error if the server never started. Task 22's original main.go (goroutine + manual `signal.Notify` + `e.Shutdown(ctx)`) does not compile against v5 and has been rewritten below: `e.Start(...)` is called directly (no goroutine), and cleanup (Mongo disconnect) runs in the code immediately after `Start` returns, since that only happens once the server has already fully shut down.
 - Everything else checked against the real `go.mongodb.org/mongo-driver`, `golang-jwt/jwt/v5`, and `echo/v5` sources during task reviews matched this plan's assumptions exactly (see individual task review notes in `.superpowers/sdd/progress.md`).
 
 ## Global Constraints
@@ -3974,10 +3975,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"bom-tanstack-api/internal/bootstrap"
@@ -4037,23 +4034,19 @@ func main() {
 
 	e := router.New(cfg.JWTSecret, authHandler, userHandler)
 
-	go func() {
-		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server: %v", err)
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-	<-quit
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := e.Shutdown(shutdownCtx); err != nil {
-		log.Printf("server shutdown: %v", err)
+	// Echo v5's Start blocks the whole request/response/graceful-shutdown
+	// lifecycle internally: it installs its own SIGINT/SIGTERM handler and
+	// only returns once the HTTP server has finished a graceful shutdown
+	// (or failed to start in the first place). There is no separate
+	// e.Shutdown to call from application code — unlike Echo v4, no
+	// goroutine/signal.Notify/manual-Shutdown dance is needed or possible.
+	if err := e.Start(":" + cfg.Port); err != nil {
+		log.Printf("server stopped: %v", err)
 	}
-	if err := client.Disconnect(shutdownCtx); err != nil {
+
+	disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer disconnectCancel()
+	if err := client.Disconnect(disconnectCtx); err != nil {
 		log.Printf("mongo disconnect: %v", err)
 	}
 }
