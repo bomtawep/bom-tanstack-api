@@ -11,7 +11,7 @@
 ## Correction Log
 
 - **Echo v5 `Context` is a struct, not an interface** (unlike v4). Every place below that reads `echo.Context` as a type must be `*echo.Context`: `echo.HandlerFunc = func(c *Context) error`, handler methods (`func (h *AuthHandler) Login(c *echo.Context) error`), etc. Discovered during Task 16; applies to Tasks 16-21.
-- **`echo.HTTPErrorHandler`'s signature is `func(c *Context, err error)`** — context first, error second — not `func(err error, c echo.Context)` as written in Task 18 below. `middleware.ErrorHandler` must be `func ErrorHandler(c *echo.Context, err error)` with the body's error-handling logic unchanged, just the parameter order/type flipped.
+- **`echo.HTTPErrorHandler`'s signature is `func(c *Context, err error)`** — context first, error second — not `func(err error, c echo.Context)` as originally written in Task 18. Fixed directly in Task 18's code below, along with three more v5 differences found while fixing it: `echo.HTTPError.Message` is a plain `string` field (not `interface{}`, so no type assertion needed); `(*echo.Context).Response()` returns `http.ResponseWriter`, not a struct with a `.Committed` field — use `echo.UnwrapResponse(c.Response())` to get the underlying `*echo.Response` and read `.Committed` from that; `(*echo.Context).Logger()` returns `*slog.Logger`, whose `.Error` takes `(msg string, args ...any)`, not an `error` value directly.
 - Everything else checked against the real `go.mongodb.org/mongo-driver`, `golang-jwt/jwt/v5`, and `echo/v5` sources during task reviews matched this plan's assumptions exactly (see individual task review notes in `.superpowers/sdd/progress.md`).
 
 ## Global Constraints
@@ -2928,7 +2928,7 @@ git commit -m "feat(middleware): add RequirePermission middleware"
 
 **Interfaces:**
 - Consumes: `apperr.*` (Task 2).
-- Produces: `middleware.ErrorHandler(err error, c echo.Context)`, matching Echo's `echo.HTTPErrorHandler` signature. Wired in `cmd/api/main.go` (Task 21) via `e.HTTPErrorHandler = middleware.ErrorHandler`. This is what turns errors returned by `JWTAuth`, `RequirePermission`, and every handler (Tasks 19–20) into the actual HTTP response.
+- Produces: `middleware.ErrorHandler(c *echo.Context, err error)`, matching Echo v5's `echo.HTTPErrorHandler = func(c *Context, err error)` signature (context first, error second — per the Correction Log). Wired in `cmd/api/main.go` (Task 21) via `e.HTTPErrorHandler = middleware.ErrorHandler`. This is what turns errors returned by `JWTAuth`, `RequirePermission`, and every handler (Tasks 19–20) into the actual HTTP response.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2976,7 +2976,7 @@ func TestErrorHandler_MapsDomainErrorsToStatusCodes(t *testing.T) {
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
 
-		ErrorHandler(tc.err, c)
+		ErrorHandler(c, tc.err)
 
 		assert.Equal(t, tc.expectedStatus, rec.Code, "error: %v", tc.err)
 	}
@@ -2988,7 +2988,7 @@ func TestErrorHandler_UnknownErrorReturns500WithGenericMessage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	ErrorHandler(assert.AnError, c)
+	ErrorHandler(c, assert.AnError)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	body := decodeErrorBody(t, rec)
@@ -3017,7 +3017,7 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-func ErrorHandler(err error, c echo.Context) {
+func ErrorHandler(c *echo.Context, err error) {
 	status := http.StatusInternalServerError
 	message := "internal server error"
 
@@ -3037,15 +3037,13 @@ func ErrorHandler(err error, c echo.Context) {
 		var he *echo.HTTPError
 		if errors.As(err, &he) {
 			status = he.Code
-			if s, ok := he.Message.(string); ok {
-				message = s
-			}
+			message = he.Message
 		} else {
-			c.Logger().Error(err)
+			c.Logger().Error("unhandled error", "error", err)
 		}
 	}
 
-	if c.Response().Committed {
+	if resp, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil && resp.Committed {
 		return
 	}
 	_ = c.JSON(status, map[string]string{"error": message})
