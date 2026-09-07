@@ -41,6 +41,7 @@ endpoints are in scope here.
 | Email delivery | Plain SMTP (config via env), no third-party API |
 | Role → permission mapping | Hardcoded in code, not editable via API/DB |
 | Multi-session | Supported — refresh tokens tracked per device, individually revocable |
+| Initial admin bootstrap | Seeded from env vars (`SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`) at server startup, only if no active admin exists yet |
 
 ## Architecture
 
@@ -144,6 +145,15 @@ type PasswordResetToken struct {
 - Staff, Viewer: none of the `user:*` permissions
 
 ## Key Flows
+
+**Initial admin bootstrap**: on server startup, after connecting to MongoDB and before
+accepting requests, check whether any `User` document exists with `role="admin"` and
+`active=true`. If none exists and `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` are set in
+the environment, create that admin user directly with a usable bcrypt-hashed password (no
+reset-email step — there is no one else yet to have sent it, and no SMTP dependency should
+block first boot). If neither an existing admin nor the env vars are present, the server
+still starts, but no `/api/v1/users` endpoint can be called until an admin is seeded
+(a hard requirement, not a silent no-op — this is logged as a warning at startup).
 
 **Admin creates a user**: `UserService` creates the document with `PasswordHash` set to a
 hash of random bytes (never revealed to anyone — it is not a usable password), then
