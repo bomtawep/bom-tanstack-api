@@ -32,7 +32,7 @@ func ParseAccessToken(tokenString, secret string) (*Claims, error) {
 	claims := &Claims{}
 	_, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
 		return []byte(secret), nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
 			return nil, apperr.ErrTokenExpired
