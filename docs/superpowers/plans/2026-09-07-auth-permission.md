@@ -3913,7 +3913,7 @@ func New(jwtSecret string, authHandler *handler.AuthHandler, userHandler *handle
 	e.Validator = httpvalidator.New()
 	e.HTTPErrorHandler = appmiddleware.ErrorHandler
 
-	e.GET("/healthz", func(c echo.Context) error {
+	e.GET("/healthz", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
