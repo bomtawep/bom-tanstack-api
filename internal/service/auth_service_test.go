@@ -234,6 +234,23 @@ func TestAuthService_ChangePassword_WrongOldPasswordFails(t *testing.T) {
 	require.ErrorIs(t, err, apperr.ErrInvalidCredentials)
 }
 
+func TestAuthService_ChangePassword_RevokesAllOtherSessions(t *testing.T) {
+	users := newFakeUserRepo()
+	u := activeUser("alice@example.com", "password123")
+	users.add(u)
+	refreshTokens := newFakeRefreshTokenRepo()
+	resetTokens := newFakeResetTokenRepoFull()
+	m := &fakeMailer{}
+	svc := newTestAuthService(users, refreshTokens, resetTokens, m)
+	_, refreshToken, err := svc.Login(context.Background(), "alice@example.com", "password123", "agent-a")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.ChangePassword(context.Background(), u.ID, "password123", "new-password-456"))
+
+	_, _, err = svc.Refresh(context.Background(), refreshToken, "agent-a")
+	assert.ErrorIs(t, err, apperr.ErrTokenInvalid)
+}
+
 func extractTokenFromLink(t *testing.T, body string) string {
 	t.Helper()
 	const marker = "token="

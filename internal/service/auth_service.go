@@ -175,7 +175,10 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID primitive.Objec
 	if err != nil {
 		return err
 	}
-	return s.users.Update(ctx, userID, bson.M{"password_hash": hashedPW})
+	if err := s.users.Update(ctx, userID, bson.M{"password_hash": hashedPW}); err != nil {
+		return err
+	}
+	return s.refreshTokens.RevokeAllForUser(ctx, userID)
 }
 
 func (s *AuthService) Me(ctx context.Context, userID primitive.ObjectID) (*model.User, error) {
