@@ -8,6 +8,14 @@
 
 **Tech Stack:** Go 1.27, Echo v5, MongoDB via `go.mongodb.org/mongo-driver`, `golang-jwt/jwt/v5`, `golang.org/x/crypto/bcrypt`, `go-playground/validator/v10`, `stretchr/testify`, `testcontainers-go` (Mongo module) for repository integration tests.
 
+## Correction Log
+
+- **Echo v5 `Context` is a struct, not an interface** (unlike v4). Every place below that reads `echo.Context` as a type must be `*echo.Context`: `echo.HandlerFunc = func(c *Context) error`, handler methods (`func (h *AuthHandler) Login(c *echo.Context) error`), etc. Discovered during Task 16; applies to Tasks 16-21.
+- **`echo.HTTPErrorHandler`'s signature is `func(c *Context, err error)`** — context first, error second — not `func(err error, c echo.Context)` as originally written in Task 18. Fixed directly in Task 18's code below, along with three more v5 differences found while fixing it: `echo.HTTPError.Message` is a plain `string` field (not `interface{}`, so no type assertion needed); `(*echo.Context).Response()` returns `http.ResponseWriter`, not a struct with a `.Committed` field — use `echo.UnwrapResponse(c.Response())` to get the underlying `*echo.Response` and read `.Committed` from that; `(*echo.Context).Logger()` returns `*slog.Logger`, whose `.Error` takes `(msg string, args ...any)`, not an `error` value directly.
+- **Test helpers `c.SetParamNames("id")` / `c.SetParamValues(...)` don't exist in Echo v5.** The v4-style two-call API was replaced by a single `c.SetPathValues(echo.PathValues{{Name: "id", Value: id}})`, where `PathValues` is `[]PathValue{ {Name, Value string} }`. Fixed directly in Task 20's test code below (`internal/handler/user_handler_test.go`), verified to compile and round-trip correctly (`c.Param("id")` returns the set value) against the real `echo/v5@v5.3.1` module.
+- **`*echo.Echo` has no `Shutdown` method in v5 — server lifecycle is fundamentally different from v4.** `e.Start(address)` internally installs its own `SIGINT`/`SIGTERM` handler (via `signal.NotifyContext`) and blocks until a full graceful shutdown completes, returning `nil` on a clean signal-triggered shutdown or a real error if the server never started. Task 22's original main.go (goroutine + manual `signal.Notify` + `e.Shutdown(ctx)`) does not compile against v5 and has been rewritten below: `e.Start(...)` is called directly (no goroutine), and cleanup (Mongo disconnect) runs in the code immediately after `Start` returns, since that only happens once the server has already fully shut down.
+- Everything else checked against the real `go.mongodb.org/mongo-driver`, `golang-jwt/jwt/v5`, and `echo/v5` sources during task reviews matched this plan's assumptions exactly (see individual task review notes in `.superpowers/sdd/progress.md`).
+
 ## Global Constraints
 
 - Go module: `bom-tanstack-api`, Go 1.27.1 (from `go.mod`).
@@ -2922,7 +2930,7 @@ git commit -m "feat(middleware): add RequirePermission middleware"
 
 **Interfaces:**
 - Consumes: `apperr.*` (Task 2).
-- Produces: `middleware.ErrorHandler(err error, c echo.Context)`, matching Echo's `echo.HTTPErrorHandler` signature. Wired in `cmd/api/main.go` (Task 21) via `e.HTTPErrorHandler = middleware.ErrorHandler`. This is what turns errors returned by `JWTAuth`, `RequirePermission`, and every handler (Tasks 19–20) into the actual HTTP response.
+- Produces: `middleware.ErrorHandler(c *echo.Context, err error)`, matching Echo v5's `echo.HTTPErrorHandler = func(c *Context, err error)` signature (context first, error second — per the Correction Log). Wired in `cmd/api/main.go` (Task 21) via `e.HTTPErrorHandler = middleware.ErrorHandler`. This is what turns errors returned by `JWTAuth`, `RequirePermission`, and every handler (Tasks 19–20) into the actual HTTP response.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2970,7 +2978,7 @@ func TestErrorHandler_MapsDomainErrorsToStatusCodes(t *testing.T) {
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
 
-		ErrorHandler(tc.err, c)
+		ErrorHandler(c, tc.err)
 
 		assert.Equal(t, tc.expectedStatus, rec.Code, "error: %v", tc.err)
 	}
@@ -2982,7 +2990,7 @@ func TestErrorHandler_UnknownErrorReturns500WithGenericMessage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	ErrorHandler(assert.AnError, c)
+	ErrorHandler(c, assert.AnError)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	body := decodeErrorBody(t, rec)
@@ -3011,7 +3019,7 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-func ErrorHandler(err error, c echo.Context) {
+func ErrorHandler(c *echo.Context, err error) {
 	status := http.StatusInternalServerError
 	message := "internal server error"
 
@@ -3031,15 +3039,13 @@ func ErrorHandler(err error, c echo.Context) {
 		var he *echo.HTTPError
 		if errors.As(err, &he) {
 			status = he.Code
-			if s, ok := he.Message.(string); ok {
-				message = s
-			}
+			message = he.Message
 		} else {
-			c.Logger().Error(err)
+			c.Logger().Error("unhandled error", "error", err)
 		}
 	}
 
-	if c.Response().Committed {
+	if resp, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil && resp.Committed {
 		return
 	}
 	_ = c.JSON(status, map[string]string{"error": message})
@@ -3157,22 +3163,22 @@ git commit -m "feat(httpvalidator): wire go-playground/validator into Echo"
 ```go
 type AuthHandler struct{ /* unexported service authServicer */ }
 func NewAuthHandler(svc authServicer) *AuthHandler
-func (h *AuthHandler) Login(c echo.Context) error
-func (h *AuthHandler) Refresh(c echo.Context) error
-func (h *AuthHandler) ForgotPassword(c echo.Context) error
-func (h *AuthHandler) ResetPassword(c echo.Context) error
-func (h *AuthHandler) Me(c echo.Context) error
-func (h *AuthHandler) ChangePassword(c echo.Context) error
-func (h *AuthHandler) Logout(c echo.Context) error
-func (h *AuthHandler) LogoutAll(c echo.Context) error
+func (h *AuthHandler) Login(c *echo.Context) error
+func (h *AuthHandler) Refresh(c *echo.Context) error
+func (h *AuthHandler) ForgotPassword(c *echo.Context) error
+func (h *AuthHandler) ResetPassword(c *echo.Context) error
+func (h *AuthHandler) Me(c *echo.Context) error
+func (h *AuthHandler) ChangePassword(c *echo.Context) error
+func (h *AuthHandler) Logout(c *echo.Context) error
+func (h *AuthHandler) LogoutAll(c *echo.Context) error
 
 type UserHandler struct{ /* unexported service userServicer */ }
 func NewUserHandler(svc userServicer) *UserHandler
-func (h *UserHandler) Create(c echo.Context) error
-func (h *UserHandler) List(c echo.Context) error
-func (h *UserHandler) Get(c echo.Context) error
-func (h *UserHandler) Update(c echo.Context) error
-func (h *UserHandler) Delete(c echo.Context) error
+func (h *UserHandler) Create(c *echo.Context) error
+func (h *UserHandler) List(c *echo.Context) error
+func (h *UserHandler) Get(c *echo.Context) error
+func (h *UserHandler) Update(c *echo.Context) error
+func (h *UserHandler) Delete(c *echo.Context) error
 ```
 Registered onto routes in `cmd/api/main.go` (Task 21), which also supplies the real `*service.AuthService`/`*service.UserService` — both satisfy `authServicer`/`userServicer` structurally.
 
@@ -3396,8 +3402,8 @@ func TestUserHandler_Get_NotFoundPropagatesDomainError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	c.SetParamNames("id")
-	c.SetParamValues(primitive.NewObjectID().Hex())
+	id := primitive.NewObjectID().Hex()
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: id}})
 
 	err := h.Get(c)
 
@@ -3411,8 +3417,8 @@ func TestUserHandler_Delete_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
-	c.SetParamNames("id")
-	c.SetParamValues(primitive.NewObjectID().Hex())
+	id := primitive.NewObjectID().Hex()
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: id}})
 
 	err := h.Delete(c)
 
@@ -3461,7 +3467,7 @@ func NewAuthHandler(svc authServicer) *AuthHandler {
 	return &AuthHandler{service: svc}
 }
 
-func contextUserID(c echo.Context) (primitive.ObjectID, error) {
+func contextUserID(c *echo.Context) (primitive.ObjectID, error) {
 	return primitive.ObjectIDFromHex(c.Get("userID").(string))
 }
 
@@ -3470,7 +3476,7 @@ type loginRequest struct {
 	Password string `json:"password" validate:"required"`
 }
 
-func (h *AuthHandler) Login(c echo.Context) error {
+func (h *AuthHandler) Login(c *echo.Context) error {
 	var req loginRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
@@ -3490,7 +3496,7 @@ type refreshRequest struct {
 	RefreshToken string `json:"refreshToken" validate:"required"`
 }
 
-func (h *AuthHandler) Refresh(c echo.Context) error {
+func (h *AuthHandler) Refresh(c *echo.Context) error {
 	var req refreshRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
@@ -3506,7 +3512,7 @@ func (h *AuthHandler) Refresh(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"accessToken": access, "refreshToken": refresh})
 }
 
-func (h *AuthHandler) Logout(c echo.Context) error {
+func (h *AuthHandler) Logout(c *echo.Context) error {
 	var req refreshRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
@@ -3520,7 +3526,7 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (h *AuthHandler) LogoutAll(c echo.Context) error {
+func (h *AuthHandler) LogoutAll(c *echo.Context) error {
 	userID, err := contextUserID(c)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "invalid user context")
@@ -3535,7 +3541,7 @@ type forgotPasswordRequest struct {
 	Email string `json:"email" validate:"required,email"`
 }
 
-func (h *AuthHandler) ForgotPassword(c echo.Context) error {
+func (h *AuthHandler) ForgotPassword(c *echo.Context) error {
 	var req forgotPasswordRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
@@ -3554,7 +3560,7 @@ type resetPasswordRequest struct {
 	NewPassword string `json:"newPassword" validate:"required,min=8"`
 }
 
-func (h *AuthHandler) ResetPassword(c echo.Context) error {
+func (h *AuthHandler) ResetPassword(c *echo.Context) error {
 	var req resetPasswordRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
@@ -3573,7 +3579,7 @@ type changePasswordRequest struct {
 	NewPassword string `json:"newPassword" validate:"required,min=8"`
 }
 
-func (h *AuthHandler) ChangePassword(c echo.Context) error {
+func (h *AuthHandler) ChangePassword(c *echo.Context) error {
 	userID, err := contextUserID(c)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "invalid user context")
@@ -3591,7 +3597,7 @@ func (h *AuthHandler) ChangePassword(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (h *AuthHandler) Me(c echo.Context) error {
+func (h *AuthHandler) Me(c *echo.Context) error {
 	userID, err := contextUserID(c)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "invalid user context")
@@ -3635,7 +3641,7 @@ func NewUserHandler(svc userServicer) *UserHandler {
 	return &UserHandler{service: svc}
 }
 
-func paramObjectID(c echo.Context) (primitive.ObjectID, error) {
+func paramObjectID(c *echo.Context) (primitive.ObjectID, error) {
 	return primitive.ObjectIDFromHex(c.Param("id"))
 }
 
@@ -3645,7 +3651,7 @@ type createUserRequest struct {
 	Role  string `json:"role" validate:"required,oneof=admin manager staff viewer"`
 }
 
-func (h *UserHandler) Create(c echo.Context) error {
+func (h *UserHandler) Create(c *echo.Context) error {
 	var req createUserRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
@@ -3661,7 +3667,7 @@ func (h *UserHandler) Create(c echo.Context) error {
 	return c.JSON(http.StatusCreated, u)
 }
 
-func (h *UserHandler) List(c echo.Context) error {
+func (h *UserHandler) List(c *echo.Context) error {
 	limit, _ := strconv.ParseInt(c.QueryParam("limit"), 10, 64)
 	skip, _ := strconv.ParseInt(c.QueryParam("skip"), 10, 64)
 
@@ -3672,7 +3678,7 @@ func (h *UserHandler) List(c echo.Context) error {
 	return c.JSON(http.StatusOK, users)
 }
 
-func (h *UserHandler) Get(c echo.Context) error {
+func (h *UserHandler) Get(c *echo.Context) error {
 	id, err := paramObjectID(c)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid user id")
@@ -3690,7 +3696,7 @@ type updateUserRequest struct {
 	Role  *string `json:"role" validate:"omitempty,oneof=admin manager staff viewer"`
 }
 
-func (h *UserHandler) Update(c echo.Context) error {
+func (h *UserHandler) Update(c *echo.Context) error {
 	id, err := paramObjectID(c)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid user id")
@@ -3710,7 +3716,7 @@ func (h *UserHandler) Update(c echo.Context) error {
 	return c.JSON(http.StatusOK, u)
 }
 
-func (h *UserHandler) Delete(c echo.Context) error {
+func (h *UserHandler) Delete(c *echo.Context) error {
 	id, err := paramObjectID(c)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid user id")
@@ -3908,7 +3914,7 @@ func New(jwtSecret string, authHandler *handler.AuthHandler, userHandler *handle
 	e.Validator = httpvalidator.New()
 	e.HTTPErrorHandler = appmiddleware.ErrorHandler
 
-	e.GET("/healthz", func(c echo.Context) error {
+	e.GET("/healthz", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
@@ -3969,10 +3975,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"bom-tanstack-api/internal/bootstrap"
@@ -4032,23 +4034,19 @@ func main() {
 
 	e := router.New(cfg.JWTSecret, authHandler, userHandler)
 
-	go func() {
-		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server: %v", err)
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-	<-quit
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := e.Shutdown(shutdownCtx); err != nil {
-		log.Printf("server shutdown: %v", err)
+	// Echo v5's Start blocks the whole request/response/graceful-shutdown
+	// lifecycle internally: it installs its own SIGINT/SIGTERM handler and
+	// only returns once the HTTP server has finished a graceful shutdown
+	// (or failed to start in the first place). There is no separate
+	// e.Shutdown to call from application code — unlike Echo v4, no
+	// goroutine/signal.Notify/manual-Shutdown dance is needed or possible.
+	if err := e.Start(":" + cfg.Port); err != nil {
+		log.Printf("server stopped: %v", err)
 	}
-	if err := client.Disconnect(shutdownCtx); err != nil {
+
+	disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer disconnectCancel()
+	if err := client.Disconnect(disconnectCtx); err != nil {
 		log.Printf("mongo disconnect: %v", err)
 	}
 }
